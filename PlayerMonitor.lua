@@ -11,7 +11,7 @@ function PlayerMonitor.new(config)
         updateInterval = config and config.updateInterval or 0.1,
         fillColor = config and config.fillColor or Color3.fromRGB(255, 48, 51),
         maxDistance = config and config.maxDistance or 50,
-        autoHighlight = config and config.autoHighlight or false  -- NEW: Control auto-highlighting
+        autoHighlight = config and config.autoHighlight or false
     }
     
     self._players = {}
@@ -34,7 +34,7 @@ function PlayerMonitor:Start()
         end
     end
     
-    -- Setup connection for new players (FIXED: This was missing before)
+    -- Setup connection for new players
     self._connections.playerAdded = Players.PlayerAdded:Connect(function(player)
         if player ~= self._localPlayer then
             self:_setupPlayer(player)
@@ -86,18 +86,23 @@ end
 
 function PlayerMonitor:HighlightPlayer(player, color)
     local data = self._players[player]
-    if data and data.highlight then
-        data.highlight.FillColor = color or self.Config.fillColor
-        data.highlight.Parent = data.character
+    if not data then return end
+    
+    -- Create highlight if it doesn't exist
+    if not data.highlight then
+        data.highlight = Instance.new("Highlight")
+        data.highlight.FillColor = color or (player.Team and player.Team.TeamColor.Color) or self.Config.fillColor
+        data.highlight.OutlineColor = Color3.new(0, 0, 0)
+        data.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     end
+    
+    data.highlight.FillColor = color or (player.Team and player.Team.TeamColor.Color) or self.Config.fillColor
+    data.highlight.Parent = data.character
 end
 
 function PlayerMonitor:HighlightAll(color)
-    for _, data in pairs(self._players) do
-        if data.highlight then
-            data.highlight.FillColor = color or self.Config.fillColor
-            data.highlight.Parent = data.character
-        end
+    for player, data in pairs(self._players) do
+        self:HighlightPlayer(player, color)
     end
 end
 
@@ -118,35 +123,35 @@ end
 
 -- Private methods
 function PlayerMonitor:_setupPlayer(player)
-    -- Don't create highlight immediately unless autoHighlight is true
-    if self.Config.autoHighlight then
-        self:_updatePlayer(player)
-    else
-        -- Just track the player without creating highlight
-        if not self._players[player] then
-            self._players[player] = {
-                player = player,
-                character = player.Character,
-                humanoid = player.Character and player.Character:FindFirstChild("Humanoid"),
-                highlight = nil,
-                connections = {}
-            }
-        end
+    -- Only track the player, don't create highlight
+    if not self._players[player] then
+        self._players[player] = {
+            player = player,
+            character = player.Character,
+            humanoid = player.Character and player.Character:FindFirstChild("Humanoid"),
+            highlight = nil,  -- No highlight created by default
+            connections = {}
+        }
     end
     
     local function onCharacterAdded(character)
-        self:_removePlayer(player)
+        -- Remove old data
+        if self._players[player] and self._players[player].highlight then
+            self._players[player].highlight:Destroy()
+        end
+        
+        -- Create new tracking data
+        self._players[player] = {
+            player = player,
+            character = character,
+            humanoid = character:WaitForChild("Humanoid"),
+            highlight = nil,  -- Still no highlight
+            connections = {}
+        }
+        
+        -- Only create highlight if autoHighlight is enabled
         if self.Config.autoHighlight then
-            self:_updatePlayer(player)
-        else
-            -- Just update tracking without highlight
-            self._players[player] = {
-                player = player,
-                character = character,
-                humanoid = character:WaitForChild("Humanoid"),
-                highlight = nil,
-                connections = {}
-            }
+            self:_createHighlight(player)
         end
         
         local humanoid = character:WaitForChild("Humanoid")
@@ -154,24 +159,12 @@ function PlayerMonitor:_setupPlayer(player)
             self._needsUpdate = true 
         end)
         
-        if self._players[player] then 
-            table.insert(self._players[player].connections, healthConnection) 
-        end
+        table.insert(self._players[player].connections, healthConnection)
     end
     
     local teamConnection = player:GetPropertyChangedSignal("Team"):Connect(function() 
         self._needsUpdate = true 
     end)
-    
-    if not self._players[player] then
-        self._players[player] = {
-            player = player,
-            character = player.Character,
-            humanoid = player.Character and player.Character:FindFirstChild("Humanoid"),
-            highlight = nil,
-            connections = {}
-        }
-    end
     
     table.insert(self._players[player].connections, teamConnection)
     
@@ -179,80 +172,63 @@ function PlayerMonitor:_setupPlayer(player)
         onCharacterAdded(player.Character)
     end
     
-    table.insert(self._players[player].connections, player.CharacterAdded:Connect(onCharacterAdded))
+    local characterConnection = player.CharacterAdded:Connect(onCharacterAdded)
+    table.insert(self._players[player].connections, characterConnection)
 end
 
-function PlayerMonitor:_updatePlayer(player)
-    if player == self._localPlayer then return end
-    local character = player.Character
-    if not character then return end
-    local humanoid = character:FindFirstChild("Humanoid")
-    if not humanoid or humanoid.Health <= 0 then return end
-    
-    if not self._players[player] then
-        self._players[player] = {
-            player = player,
-            character = character,
-            humanoid = humanoid,
-            highlight = Instance.new("Highlight"),
-            connections = {}
-        }
-        self._players[player].highlight.FillColor = (player.Team and player.Team.TeamColor.Color) or self.Config.fillColor
-        self._players[player].highlight.OutlineColor = Color3.new(0, 0, 0)
-        self._players[player].highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        -- Don't parent immediately unless autoHighlight is true
-        if self.Config.autoHighlight then
-            self._players[player].highlight.Parent = character
-        end
-    else
-        -- Ensure highlight exists if autoHighlight is true
-        if self.Config.autoHighlight and not self._players[player].highlight then
-            self._players[player].highlight = Instance.new("Highlight")
-            self._players[player].highlight.FillColor = (player.Team and player.Team.TeamColor.Color) or self.Config.fillColor
-            self._players[player].highlight.OutlineColor = Color3.new(0, 0, 0)
-            self._players[player].highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            self._players[player].highlight.Parent = character
-        end
-    end
-    
+function PlayerMonitor:_createHighlight(player)
     local data = self._players[player]
-    if data.highlight then
-        if data.highlight.Parent ~= character and self.Config.autoHighlight then
-            data.highlight.Parent = character
-        end
-        if player.Team then 
-            data.highlight.FillColor = player.Team.TeamColor.Color 
-        end
+    if not data or data.highlight then return end
+    
+    data.highlight = Instance.new("Highlight")
+    data.highlight.FillColor = (player.Team and player.Team.TeamColor.Color) or self.Config.fillColor
+    data.highlight.OutlineColor = Color3.new(0, 0, 0)
+    data.highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    
+    if data.character then
+        data.highlight.Parent = data.character
     end
 end
 
 function PlayerMonitor:_removePlayer(player)
     local data = self._players[player]
     if not data then return end
+    
     if data.highlight then 
         data.highlight:Destroy() 
     end
+    
     for _, connection in pairs(data.connections) do 
         pcall(function() connection:Disconnect() end)
     end
+    
     self._players[player] = nil
 end
 
 function PlayerMonitor:_batchUpdatePlayers()
     for player, data in pairs(self._players) do
-        if player and player.Parent and data.character and data.character == player.Character then
-            local humanoid = data.character:FindFirstChild("Humanoid")
-            if humanoid and humanoid.Health > 0 then
-                if data.highlight and data.highlight.Parent ~= data.character and self.Config.autoHighlight then
-                    data.highlight.Parent = data.character
-                end
-            else
-                if data.highlight then
-                    data.highlight.Parent = nil
-                end
-            end
-        else
+        if not player or not player.Parent or not data.character or data.character ~= player.Character then
             self:_removePlayer(player)
+            continue
+        end
+        
+        local humanoid = data.character:FindFirstChild("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then
+            if data.highlight then
+                data.highlight.Parent = nil
+            end
+            continue
+        end
+        
+        -- Only update highlight if it exists and autoHighlight is enabled
+        if data.highlight and self.Config.autoHighlight then
+            if data.highlight.Parent ~= data.character then
+                data.highlight.Parent = data.character
+            end
+            
+            if player.Team then 
+                data.highlight.FillColor = player.Team.TeamColor.Color 
+            end
         end
     end
     self._needsUpdate = false
